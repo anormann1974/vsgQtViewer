@@ -1,6 +1,6 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
-#include "vulkanwindow.h"
+#include "VulkanWindow.h"
 
 #include <QFileDialog>
 #include <QColorDialog>
