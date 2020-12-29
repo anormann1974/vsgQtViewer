@@ -24,6 +24,7 @@ public:
     VulkanWindow();
     virtual ~VulkanWindow() override;
 
+    QColor clearColor() const;
     void setClearColor(const QColor &color);
     bool loadFile(const QString &filename);
 

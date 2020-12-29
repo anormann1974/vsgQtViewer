@@ -18,6 +18,13 @@
 namespace {
 static QLoggingCategory lc("vulkanwindow");
 
+static vsg::ref_ptr<vsg::Data> createWhiteTexture()
+{
+    auto vsg_data = vsg::vec4Array2D::create(1,1, vsg::Data::Layout{VK_FORMAT_R32G32B32A32_SFLOAT});
+    std::fill(vsg_data->begin(), vsg_data->end(), vsg::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    return vsg_data;
+}
+
 class Surface : public vsg::Inherit<vsg::Surface, Surface>
 {
 public:
@@ -147,8 +154,12 @@ struct VulkanWindow::Private
     vsg::ref_ptr<vsg::Group> scenegraph{vsg::Group::create()};
     vsg::ref_ptr<vsg::Group> modelRoot{vsg::Group::create()};
     vsg::ref_ptr<::Window> window;
+    vsg::ref_ptr<vsg::Camera> camera;
+    vsg::ref_ptr<vsg::ViewportState> viewport;
+    vsg::ref_ptr<vsg::CommandGraph> commandGraph;
     VkClearColorValue clearColor;
     KeyboardMap keyboard;
+    vsg::ref_ptr<vsg::CompileTraversal> compile;
 };
 
 VulkanWindow::VulkanWindow()
@@ -158,6 +169,17 @@ VulkanWindow::VulkanWindow()
     setSurfaceType(VulkanSurface);
 
     p->scenegraph->addChild(p->modelRoot);
+}
+
+QColor VulkanWindow::clearColor() const
+{
+    if (p->window.valid())
+    {
+        const auto clear = p->window->clearColor();
+        return QColor::fromRgbF(clear.float32[0], clear.float32[1], clear.float32[2], clear.float32[3]);
+    }
+
+    return {};
 }
 
 VulkanWindow::~VulkanWindow() = default;
@@ -206,6 +228,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
 
                 p->viewer->addWindow(p->window);
 
+#if 1
                 vsg::Paths searchPaths = vsg::getEnvPaths("VSG_FILE_PATH");
                 vsg::Path filename = vsg::findFile("models/teapot.vsgt", searchPaths);
 
@@ -214,6 +237,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
                     qCDebug(lc) << "Adding node to scene" << filename.c_str();
                     p->modelRoot->addChild(node);
                 }
+#endif
 
                 // compute the bounds of the scene graph to help position camera
                 vsg::ComputeBounds computeBounds;
@@ -235,15 +259,16 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
                     perspective = vsg::Perspective::create(30.0, static_cast<double>(p->window->extent2D().width) / static_cast<double>(p->window->extent2D().height), nearFarRatio*radius, radius * 4.5);
                 }
 
-                auto camera = vsg::Camera::create(perspective, lookAt, vsg::ViewportState::create(p->window->extent2D()));
+                p->viewport = vsg::ViewportState::create(p->window->extent2D());
+                p->camera = vsg::Camera::create(perspective, lookAt, p->viewport);
 
                 //p->window->clearColor() = p->clearColor;
 
-                auto commandGraph = vsg::createCommandGraphForView(p->window, camera, p->scenegraph);
+                p->commandGraph = vsg::createCommandGraphForView(p->window, p->camera, p->scenegraph);
 
-                p->viewer->assignRecordAndSubmitTaskAndPresentation({commandGraph});
+                p->viewer->assignRecordAndSubmitTaskAndPresentation({p->commandGraph});
 
-                p->viewer->addEventHandler(vsg::Trackball::create(camera));
+                p->viewer->addEventHandler(vsg::Trackball::create(p->camera));
 
                 p->viewer->setupThreading();
 
@@ -382,12 +407,19 @@ void VulkanWindow::setClearColor(const QColor &color)
             (float)color.redF(),
             (float)color.greenF(),
             (float)color.blueF(),
-            1.0f
+            (float)color.alphaF()
         }
     };
 
     p->clearColor = clearColor;
-    p->window->clearColor() = clearColor;
+
+    if (p->initialized)
+    {
+        p->window->clearColor() = clearColor;
+
+        p->commandGraph->getChildren().clear();
+        p->commandGraph->addChild(vsg::createRenderGraphForView(p->window, p->camera, p->scenegraph));
+    }
 }
 
 bool VulkanWindow::loadFile(const QString &filename)
