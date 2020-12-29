@@ -12,7 +12,6 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
 
     auto window = new VulkanWindow();
-    //window->setClearColor(Qt::red);
 
     auto widget = QWidget::createWindowContainer(window, this);
     setCentralWidget(widget);
@@ -23,7 +22,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->actionClearColor, &QAction::triggered, this, [=]() {
-        if (const auto color = QColorDialog::getColor(Qt::white, this, tr("Choose background color")); color.isValid())
+        if (const auto color = QColorDialog::getColor(window->clearColor(), this, tr("Choose background color")); color.isValid())
         {
             window->setClearColor(color);
         }
