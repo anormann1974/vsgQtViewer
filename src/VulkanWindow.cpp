@@ -2,7 +2,7 @@
 #    define NOMINMAX
 #endif
 
-#include "vulkanwindow.h"
+#include "VulkanWindow.h"
 
 #include <vsg/all.h>
 #include <vsg/viewer/Window.h>
