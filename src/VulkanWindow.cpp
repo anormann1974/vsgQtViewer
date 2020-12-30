@@ -1,22 +1,33 @@
 #ifndef NOMINMAX
-#    define NOMINMAX
+#define NOMINMAX
 #endif
 
 #include "VulkanWindow.h"
 
-#include <vsg/all.h>
-#include <vsg/viewer/Window.h>
+#include <vulkan/vulkan.h>
 
-#include <QDebug>
+#ifdef Q_OS_LINUX
+#undef None
+#undef Status
+#undef Bool
+#undef CursorShape
+#endif
+
 #include <QVulkanInstance>
 #include <QPlatformSurfaceEvent>
 #include <QThread>
 #include <QCoreApplication>
 #include <QLoggingCategory>
 
+#include <vsg/all.h>
+#include <vsg/viewer/Window.h>
+
 
 namespace {
 static QLoggingCategory lc("vulkanwindow");
+}
+
+namespace vsgQt {
 
 static vsg::ref_ptr<vsg::Data> createWhiteTexture()
 {
@@ -101,10 +112,12 @@ public:
 
     virtual const char* instanceExtensionSurfaceName() const override
     {
-#if defined(Q_OS_WINDOWS)
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
         return VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
-#elif defined(Q_OS_LINUX)
+#elif defined(VK_USE_PLATFORM_XLIB_KHR)
         return VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
+#elif defined(VK_USE_PLATFORM_XCB_KHR)
+        return VK_KHR_XCB_SURFACE_EXTENSION_NAME;
 #endif
     }
 
@@ -153,12 +166,12 @@ struct VulkanWindow::Private
     vsg::ref_ptr<vsg::Viewer> viewer{vsg::Viewer::create()};
     vsg::ref_ptr<vsg::Group> scenegraph{vsg::Group::create()};
     vsg::ref_ptr<vsg::Group> modelRoot{vsg::Group::create()};
-    vsg::ref_ptr<::Window> window;
+    vsg::ref_ptr<vsgQt::Window> window;
     vsg::ref_ptr<vsg::Camera> camera;
     vsg::ref_ptr<vsg::ViewportState> viewport;
     vsg::ref_ptr<vsg::CommandGraph> commandGraph;
     VkClearColorValue clearColor;
-    KeyboardMap keyboard;
+    vsgQt::KeyboardMap keyboard;
     vsg::ref_ptr<vsg::CompileTraversal> compile;
 };
 
@@ -205,7 +218,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
             windowTraits->fullscreen = false;
             windowTraits->samples = 4;
 
-            p->window = new ::Window(this, windowTraits);
+            p->window = new vsgQt::Window(this, windowTraits);
 
             vsg::Names instanceExtensions;
             instanceExtensions.push_back("VK_KHR_surface");
@@ -459,7 +472,7 @@ void VulkanWindow::render()
     requestUpdate();
 }
 
-KeyboardMap::KeyboardMap()
+vsgQt::KeyboardMap::KeyboardMap()
     : _keycodeMap{
         {0x0, vsg::KEY_Undefined},
         {Qt::Key_Space, vsg::KEY_Space},
@@ -705,7 +718,7 @@ KeyboardMap::KeyboardMap()
 {
 }
 
-bool KeyboardMap::getKeySymbol(const QKeyEvent *e, vsg::KeySymbol &keySymbol, vsg::KeySymbol &modifiedKeySymbol, vsg::KeyModifier &keyModifier)
+bool vsgQt::KeyboardMap::getKeySymbol(const QKeyEvent *e, vsg::KeySymbol &keySymbol, vsg::KeySymbol &modifiedKeySymbol, vsg::KeyModifier &keyModifier)
 {
     auto itr = _keycodeMap.find((uint32_t)e->key());
 
