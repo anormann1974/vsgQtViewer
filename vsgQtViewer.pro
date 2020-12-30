@@ -38,5 +38,5 @@ win32 {
 unix {
     DEFINES *= VK_USE_PLATFORM_XCB_KHR
     INCLUDEPATH *= $$(VSG_ROOT)/include $$(VULKAN_SDK)/include
-    LIBS *= -L$$(VSG_ROOT)/lib -L$$(VULKAN_SDK)/lib -lvsg -lvulkan-1 -lGenericCodeGen -lMachineIndependent -lOGLCompiler -lOSDependent -lglslang -lspirv-cross-c -lspirv-cross-core -lspirv-cross-cpp -lspirv-cross-glsl -lspirv-cross-reflect -lspirv-cross-util -lSPIRV -lSPIRV-Tools-opt -lSPIRV-Tools
+    LIBS *= -L$$(VSG_ROOT)/lib -L$$(VULKAN_SDK)/lib -lvsg -lvulkan -lglslang -lOGLCompiler -lOSDependent -lHLSL -lSPIRV -lSPIRV-Tools-opt -lSPIRV-Tools
 }
