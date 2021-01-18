@@ -1,8 +1,5 @@
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include "VulkanWindow.h"
+#include "ReaderWriterAssimp.h"
 
 #include <vulkan/vulkan.h>
 
@@ -19,12 +16,19 @@
 #include <QCoreApplication>
 #include <QLoggingCategory>
 
-#include <vsg/all.h>
-#include <vsg/viewer/Window.h>
-
+#include <vsg/viewer/Viewer.h>
+#include <vsg/ui/KeyEvent.h>
+#include <vsg/ui/ScrollWheelEvent.h>
+#include <vsg/ui/PointerEvent.h>
+#include <vsg/io/read.h>
+#include <vsg/traversals/ComputeBounds.h>
+#include <vsg/viewer/Trackball.h>
+#include <vsg/viewer/RenderGraph.h>
+#include <vsg/viewer/View.h>
+#include <vsg/commands/ClearAttachments.h>
 
 namespace {
-static QLoggingCategory lc("vulkanwindow");
+static QLoggingCategory lc("VulkanWindow");
 }
 
 namespace vsgQt {
@@ -41,8 +45,9 @@ class Surface : public vsg::Inherit<vsg::Surface, Surface>
 public:
 
     Surface(QWindow *window, vsg::Instance *instance)
-        : Inherit(QVulkanInstance::surfaceForWindow(window), instance)
+        : Inherit(nullptr, instance)
     {
+        _surface = QVulkanInstance::surfaceForWindow(window);
     }
 
     virtual ~Surface()
@@ -67,8 +72,9 @@ public:
             share(*traits->shareWindow);
         }
 
-        _extent2D.width = win->size().width();
-        _extent2D.height = win->size().height();
+        const auto size = win->size();
+        _extent2D.width = size.width();
+        _extent2D.height = size.height();
 
         traits->nativeWindow = win;
     }
@@ -160,7 +166,7 @@ protected:
 
 struct VulkanWindow::Private
 {
-    QVulkanInstance *instance{new QVulkanInstance()};
+    QVulkanInstance instance;
     bool initialized{false};
     vsg::ref_ptr<vsg::Instance> vsgInstance;
     vsg::ref_ptr<vsg::Viewer> viewer{vsg::Viewer::create()};
@@ -170,9 +176,9 @@ struct VulkanWindow::Private
     vsg::ref_ptr<vsg::Camera> camera;
     vsg::ref_ptr<vsg::ViewportState> viewport;
     vsg::ref_ptr<vsg::CommandGraph> commandGraph;
+    vsg::ref_ptr<vsg::RenderGraph> renderGraph;
     VkClearColorValue clearColor;
     vsgQt::KeyboardMap keyboard;
-    vsg::ref_ptr<vsg::CompileTraversal> compile;
 };
 
 VulkanWindow::VulkanWindow()
@@ -210,8 +216,8 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
             const uint32_t height = static_cast<uint32_t>(rect.height());
 
             auto windowTraits = vsg::WindowTraits::create();
-            windowTraits->debugLayer = true;
-            windowTraits->apiDumpLayer = true;
+            windowTraits->debugLayer = false;
+            windowTraits->apiDumpLayer = false;
             windowTraits->windowTitle = "vsgQtViewer";
             windowTraits->width = width;
             windowTraits->height = height;
@@ -226,26 +232,33 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
             //instanceExtensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
 
             vsg::Names requestedLayers;
-            //requestedLayers.push_back("VK_LAYER_KHRONOS_validation");
-            //requestedLayers.push_back("VK_LAYER_LUNARG_api_dump");
+            requestedLayers.push_back("VK_LAYER_KHRONOS_validation");
+//            requestedLayers.push_back("VK_LAYER_LUNARG_api_dump");
 
             vsg::Names validatedNames = vsg::validateInstancelayerNames(requestedLayers);
 
             p->vsgInstance = vsg::Instance::create(instanceExtensions, validatedNames);
 
-            p->instance->setVkInstance(p->vsgInstance->getInstance());
-            if (p->instance->create())
+            p->instance.setVkInstance(p->vsgInstance->getInstance());
+            if (p->instance.create())
             {
                 qCDebug(lc) << __func__<< "success.";
-                setVulkanInstance(p->instance);
+                setVulkanInstance(&p->instance);
 
                 p->viewer->addWindow(p->window);
 
 #if 1
                 vsg::Paths searchPaths = vsg::getEnvPaths("VSG_FILE_PATH");
-                vsg::Path filename = vsg::findFile("models/teapot.vsgt", searchPaths);
+                //vsg::Path filename = vsg::findFile("models/TestScene.fbx", searchPaths);
+                //vsg::Path filename = vsg::findFile("models/teapot.vsgt", searchPaths);
+                //vsg::Path filename = "C:/Users/andre/Documents/Assest/Meshes/DamagedHelmet/glTF/DamagedHelmet.gltf";
+                vsg::Path filename = "C:/Users/andre/Documents/Assest/Meshes/DamagedHelmet/glTF-Binary/DamagedHelmet.glb";
+                //vsg::Path filename = "C:/Users/andre/Documents/Assest/Meshes/DamagedHelmet/glTF-Embedded/DamagedHelmet.gltf";
 
-                if (auto node = vsg::read_cast<vsg::Node>(filename); node.valid())
+                auto opts = vsg::Options::create();
+                opts->readerWriter = ReaderWriterAssimp::create();
+
+                if (auto node = vsg::read_cast<vsg::Node>(filename, opts); node.valid())
                 {
                     qCDebug(lc) << "Adding node to scene" << filename.c_str();
                     p->modelRoot->addChild(node);
@@ -269,7 +282,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
                 }
                 else
                 {
-                    perspective = vsg::Perspective::create(30.0, static_cast<double>(p->window->extent2D().width) / static_cast<double>(p->window->extent2D().height), nearFarRatio*radius, radius * 4.5);
+                    perspective = vsg::Perspective::create(30.0, static_cast<double>(p->window->extent2D().width) / static_cast<double>(p->window->extent2D().height), nearFarRatio*radius, radius * 45);
                 }
 
                 p->viewport = vsg::ViewportState::create(p->window->extent2D());
@@ -277,15 +290,16 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
 
                 //p->window->clearColor() = p->clearColor;
 
-                p->commandGraph = vsg::createCommandGraphForView(p->window, p->camera, p->scenegraph);
+                p->commandGraph = vsg::CommandGraph::create(p->window);
+                p->renderGraph = vsg::RenderGraph::create(p->window);
+                p->commandGraph->addChild(p->renderGraph);
 
-                p->viewer->assignRecordAndSubmitTaskAndPresentation({p->commandGraph});
+                auto view = vsg::View::create(p->camera, p->scenegraph);
+                p->renderGraph->addChild(view);
 
                 p->viewer->addEventHandler(vsg::Trackball::create(p->camera));
 
-                p->viewer->setupThreading();
-
-                // compile the Vulkan objects
+                p->viewer->assignRecordAndSubmitTaskAndPresentation({p->commandGraph});
                 p->viewer->compile();
 
                 vsg::clock::time_point event_time = vsg::clock::now();
@@ -428,6 +442,7 @@ void VulkanWindow::setClearColor(const QColor &color)
 
     if (p->initialized)
     {
+        //p->viewer->compile();
         p->window->clearColor() = clearColor;
 
         p->commandGraph->getChildren().clear();
@@ -437,8 +452,10 @@ void VulkanWindow::setClearColor(const QColor &color)
 
 bool VulkanWindow::loadFile(const QString &filename)
 {
+    auto opts = vsg::Options::create();
+    opts->readerWriter = ReaderWriterAssimp::create();
 
-    if (auto node = vsg::read_cast<vsg::Node>(filename.toStdString()); node.valid())
+    if (auto node = vsg::read_cast<vsg::Node>(filename.toStdString(), opts); node.valid())
     {
         qCDebug(lc) << "Adding node to scene" << filename;
 
@@ -468,7 +485,6 @@ void VulkanWindow::render()
         p->viewer->present();
     }
 
-    //qCDebug(lc) << __func__;
     requestUpdate();
 }
 

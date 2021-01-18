@@ -12,6 +12,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
 
     auto window = new VulkanWindow();
+    window->setClearColor(Qt::red);
 
     auto widget = QWidget::createWindowContainer(window, this);
     setCentralWidget(widget);

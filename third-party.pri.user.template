@@ -1,0 +1,4 @@
+win32 {
+    OSG_ROOT = <Path>
+    OSGQT_ROOT = <Path>
+}

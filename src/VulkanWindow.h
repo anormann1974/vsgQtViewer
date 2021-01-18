@@ -2,15 +2,6 @@
 
 #include <QWindow>
 
-namespace vsg {
-class Viewer;
-class Window;
-class StateGroup;
-}
-
-namespace vsgQt {
-class Window;
-}
 
 namespace vsg {
 class Instance;
@@ -19,6 +10,8 @@ class Instance;
 class VulkanWindow : public QWindow
 {
     Q_OBJECT
+    Q_PROPERTY(QColor clearColor READ clearColor WRITE setClearColor)
+    Q_PROPERTY(vsg::Instance* instance READ instance)
 public:
 
     VulkanWindow();
