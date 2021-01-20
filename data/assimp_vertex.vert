@@ -14,8 +14,12 @@ layout(location = 1) out vec3 normalDir;
 layout(location = 2) in vec2 osg_TexCoord0;
 layout(location = 2) out vec2 texCoord0;
 
+layout(location = 3) in vec3 osg_Tangents;
+layout(location = 4) in vec3 osg_Bitangents;
+
 layout(location = 5) out vec3 viewDir;
 layout(location = 6) out vec3 lightDir;
+layout(location = 7) out mat3 tbn;
 
 out gl_PerVertex{ vec4 gl_Position; };
 
@@ -35,5 +39,9 @@ void main()
     else
         lightDir = lpos.xyz + viewDir;
 
-    texCoord0 = osg_TexCoord0;
+    tbn[0] = normalize(vec4(modelView * vec4(osg_Tangents, 1)).xyz);
+    tbn[1] = normalize(vec4(modelView * vec4(osg_Bitangents, 1)).xyz);
+    tbn[2] = normalize(n);
+
+    texCoord0 = osg_TexCoord0 * vec2(1,1);
 }

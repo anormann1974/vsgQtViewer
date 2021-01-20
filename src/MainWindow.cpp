@@ -18,7 +18,7 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(widget);
 
     connect(ui->actionOpen, &QAction::triggered, this, [=]() {
-        if (const auto filename = QFileDialog::getOpenFileName(this, tr("Open file"), nullptr, "VSG files (*.vsgt);;All files (*.*)"); !filename.isEmpty())
+        if (const auto filename = QFileDialog::getOpenFileName(this, tr("Open file"), nullptr, "Supported files (*.vsgt *.fbx *.gltf *.glb *.obj);;All files (*.*)"); !filename.isEmpty())
             window->loadFile(filename);
     });
 
@@ -28,6 +28,8 @@ MainWindow::MainWindow(QWidget *parent)
             window->setClearColor(color);
         }
     });
+
+    connect(ui->actionNew, &QAction::triggered, window, &VulkanWindow::clearScene);
 }
 
 MainWindow::~MainWindow()

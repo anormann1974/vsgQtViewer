@@ -1,5 +1,6 @@
 #include "VulkanWindow.h"
 #include "ReaderWriterAssimp.h"
+#include "SkyBox.h"
 
 #include <vulkan/vulkan.h>
 
@@ -26,9 +27,38 @@
 #include <vsg/viewer/RenderGraph.h>
 #include <vsg/viewer/View.h>
 #include <vsg/commands/ClearAttachments.h>
+#include <vsg/state/ResourceHints.h>
+#include <vsg/nodes/MatrixTransform.h>
 
 namespace {
 static QLoggingCategory lc("VulkanWindow");
+
+class Trackball : public vsg::Trackball
+{
+public:
+    explicit Trackball(vsg::ref_ptr<vsg::Camera> camera)
+        : vsg::Trackball(camera)
+    {
+    }
+
+    void setHome(vsg::LookAt *lookAt)
+    {
+        _homeLookAt = lookAt;
+    }
+
+    void home()
+    {
+        auto lookAt = dynamic_cast<vsg::LookAt*>(_camera->getViewMatrix());
+        if (lookAt && _homeLookAt)
+        {
+            lookAt->eye = _homeLookAt->eye;
+            lookAt->center = _homeLookAt->center;
+            lookAt->up = _homeLookAt->up;
+        }
+    }
+
+};
+
 }
 
 namespace vsgQt {
@@ -170,7 +200,7 @@ struct VulkanWindow::Private
     bool initialized{false};
     vsg::ref_ptr<vsg::Instance> vsgInstance;
     vsg::ref_ptr<vsg::Viewer> viewer{vsg::Viewer::create()};
-    vsg::ref_ptr<vsg::Group> scenegraph{vsg::Group::create()};
+    vsg::ref_ptr<vsg::MatrixTransform> scenegraph{vsg::MatrixTransform::create()};
     vsg::ref_ptr<vsg::Group> modelRoot{vsg::Group::create()};
     vsg::ref_ptr<vsgQt::Window> window;
     vsg::ref_ptr<vsg::Camera> camera;
@@ -179,6 +209,7 @@ struct VulkanWindow::Private
     vsg::ref_ptr<vsg::RenderGraph> renderGraph;
     VkClearColorValue clearColor;
     vsgQt::KeyboardMap keyboard;
+    vsg::ref_ptr<Trackball> trackball;
 };
 
 VulkanWindow::VulkanWindow()
@@ -187,6 +218,7 @@ VulkanWindow::VulkanWindow()
 {   
     setSurfaceType(VulkanSurface);
 
+    //p->scenegraph->setMatrix(vsg::rotate(vsg::PIf * 0.5f, 1.0f, 0.0f, 0.0f));
     p->scenegraph->addChild(p->modelRoot);
 }
 
@@ -247,7 +279,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
 
                 p->viewer->addWindow(p->window);
 
-#if 1
+#if 0
                 vsg::Paths searchPaths = vsg::getEnvPaths("VSG_FILE_PATH");
                 //vsg::Path filename = vsg::findFile("models/TestScene.fbx", searchPaths);
                 //vsg::Path filename = vsg::findFile("models/teapot.vsgt", searchPaths);
@@ -263,6 +295,8 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
                     qCDebug(lc) << "Adding node to scene" << filename.c_str();
                     p->modelRoot->addChild(node);
                 }
+#else
+                p->scenegraph->addChild(createSkybox());
 #endif
 
                 // compute the bounds of the scene graph to help position camera
@@ -297,7 +331,8 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
                 auto view = vsg::View::create(p->camera, p->scenegraph);
                 p->renderGraph->addChild(view);
 
-                p->viewer->addEventHandler(vsg::Trackball::create(p->camera));
+                p->trackball = vsg::ref_ptr<Trackball>(new Trackball(p->camera));
+                p->viewer->addEventHandler(p->trackball);
 
                 p->viewer->assignRecordAndSubmitTaskAndPresentation({p->commandGraph});
                 p->viewer->compile();
@@ -458,11 +493,34 @@ bool VulkanWindow::loadFile(const QString &filename)
     if (auto node = vsg::read_cast<vsg::Node>(filename.toStdString(), opts); node.valid())
     {
         qCDebug(lc) << "Adding node to scene" << filename;
+        p->modelRoot->addChild(node);
 
 //        auto root = vsg::StateGroup::create();
 //        p->modelRoot->addChild(root);
 
-        p->modelRoot->addChild(node);
+        vsg::ComputeBounds computeBounds;
+        node->accept(computeBounds);
+        vsg::dvec3 center = (computeBounds.bounds.min+computeBounds.bounds.max)*0.5;
+        double radius = vsg::length(computeBounds.bounds.max-computeBounds.bounds.min);
+        double nearFarRatio = 0.001;
+
+        // set up the camera
+        auto lookAt = vsg::LookAt::create(center+vsg::dvec3(0.0, -radius*3.5, 0.0), center, vsg::dvec3(0.0, 0.0, 1.0));
+
+        vsg::ref_ptr<vsg::ProjectionMatrix> perspective;
+        if (vsg::ref_ptr<vsg::EllipsoidModel> ellipsoidModel(p->scenegraph->getObject<vsg::EllipsoidModel>("EllipsoidModel")); ellipsoidModel)
+        {
+            perspective = vsg::EllipsoidPerspective::create(lookAt, ellipsoidModel, 30.0, static_cast<double>(p->window->extent2D().width) / static_cast<double>(p->window->extent2D().height), nearFarRatio, 0.0);
+        }
+        else
+        {
+            perspective = vsg::Perspective::create(30.0, static_cast<double>(p->window->extent2D().width) / static_cast<double>(p->window->extent2D().height), 0.1, 10000.0);
+        }
+
+        p->camera->setProjectionMatrix(perspective);
+        p->trackball->setHome(lookAt);
+        p->trackball->home();
+
         p->viewer->compile();
         return true;
     }
@@ -763,4 +821,9 @@ bool vsgQt::KeyboardMap::getKeySymbol(const QKeyEvent *e, vsg::KeySymbol &keySym
     keyModifier = (vsg::KeyModifier)modifierMask;
 
     return true;
+}
+
+void VulkanWindow::clearScene()
+{
+    p->modelRoot->getChildren().clear();
 }

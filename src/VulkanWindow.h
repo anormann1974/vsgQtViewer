@@ -20,6 +20,7 @@ public:
     QColor clearColor() const;
     void setClearColor(const QColor &color);
     bool loadFile(const QString &filename);
+    void clearScene();
 
     vsg::Instance* instance();
 

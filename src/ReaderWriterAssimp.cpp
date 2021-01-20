@@ -1,9 +1,16 @@
 #include "ReaderWriterAssimp.h"
 #include "ReaderWriterStbi.h"
+#include "ReaderWriterKTX.h"
+
+#include "data/assimp_vertex.h"
+#include "data/assimp_phong.h"
+#include "data/assimp_pbr.h"
+#include "data/marmorset_pbr.h"
 
 #include <stack>
 #include <filesystem>
 #include <strstream>
+#include <iostream>
 
 #include <vsg/io/FileSystem.h>
 #include <vsg/core/Array3D.h>
@@ -19,17 +26,15 @@
 #include <vsg/state/DescriptorBuffer.h>
 #include <vsg/state/DescriptorImage.h>
 #include <vsg/io/read.h>
+#include <vsg/maths/transform.h>
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/pbrmaterial.h>
 
-#include <QLoggingCategory>
-#include <QFile>
 
 namespace {
-static QLoggingCategory lc("ReaderWriterAssimp");
 
 struct Material {
     vsg::vec4 ambient{0.0f, 0.0f, 0.0f, 1.0f};
@@ -40,11 +45,14 @@ struct Material {
 };
 
 struct PbrMaterial {
-    vsg::vec4 base{0.0, 0.0, 0.0, 1.0};
+    vsg::vec4 albedo{0.0, 0.0, 0.0, 1.0};
+    vsg::vec4 emissive{0.0, 0.0, 0.0, 1.0};
+    vsg::vec4 metallicRoughness{0.0, 0.0, 0.0, 0.0};
 };
 
 static vsg::vec4 kBlackColor{0.0, 0.0, 0.0, 0.0};
 static vsg::vec4 kWhiteColor{1.0, 1.0, 1.0, 1.0};
+static vsg::vec4 kNormalColor{127.0 / 255.0, 127.0 / 255.0, 1.0, 1.0};
 
 vsg::ref_ptr<vsg::Data> createTexture(const vsg::vec4 &color)
 {
@@ -55,74 +63,58 @@ vsg::ref_ptr<vsg::Data> createTexture(const vsg::vec4 &color)
 
 static auto kWhiteData = createTexture(kWhiteColor);
 static auto kBlackData = createTexture(kBlackColor);
+static auto kNormalData = createTexture(kNormalColor);
 
 }
 
 ReaderWriterAssimp::ReaderWriterAssimp()
-    : _options{vsg::Options::create(ReaderWriterStbi::create())}
+    : _options{vsg::Options::create()}
 {
-    _shaders.reserve(5);    
+    _shaders.reserve(5);
 
-    auto readSpvFile = [this](const QString &filename, VkShaderStageFlagBits stage) {
-        if (QFile file(filename); file.open(QIODevice::ReadOnly))
-        {
-            const auto content = file.readAll();
-            vsg::ShaderModule::SPIRV spirv(content.size() / sizeof(vsg::ShaderModule::SPIRV::value_type));
+    auto readerWriter = vsg::CompositeReaderWriter::create();
+    readerWriter->add(ReaderWriterStbi::create());
+    readerWriter->add(ReaderWriterKTX::create());
+    _options->readerWriter = readerWriter;
 
-            std::memcpy(spirv.data(), content.constData(), content.size());
+    auto readSpvFile = [](const uint32_t *content, size_t size, VkShaderStageFlagBits stage) -> vsg::ref_ptr<vsg::ShaderStage> {
+        const auto count = size / sizeof(vsg::ShaderModule::SPIRV::value_type);
+        vsg::ShaderModule::SPIRV spirv(content, content+count);
 
-            if (auto shader = vsg::ShaderStage::create(stage, "main", spirv); shader.valid())
-                _shaders.push_back(shader);
+        if (auto shader = vsg::ShaderStage::create(stage, "main", spirv); shader.valid())
+            return shader;
 
-            file.close();
-        }
+        return {};
     };
 
-    auto readSpvSingleFile = [this](const QString &filename) {
-        if (QFile file(filename); file.open(QIODevice::ReadOnly))
-        {
-            const auto content = file.readAll();
-            vsg::ShaderModule::SPIRV spirv(content.size() / sizeof(vsg::ShaderModule::SPIRV::value_type));
+    // Load phong shaders
+    if (auto shader = readSpvFile(assimp_vertex, sizeof(assimp_vertex), VK_SHADER_STAGE_VERTEX_BIT); shader.valid())
+        _shaders.push_back(shader);
 
-            std::memcpy(spirv.data(), content.constData(), content.size());
+    if (auto shader = readSpvFile(assimp_phong, sizeof(assimp_phong), VK_SHADER_STAGE_FRAGMENT_BIT); shader.valid())
+        _shaders.push_back(shader);
 
-            if (auto shader = vsg::ShaderStage::create(VK_SHADER_STAGE_VERTEX_BIT, "main", spirv); shader.valid())
-                _shaders.push_back(shader);
+    // Load pbr shaders
+    if (auto shader = readSpvFile(assimp_vertex, sizeof(assimp_vertex), VK_SHADER_STAGE_VERTEX_BIT); shader.valid())
+        _pbrShaders.push_back(shader);
 
-            if (auto shader = vsg::ShaderStage::create(VK_SHADER_STAGE_FRAGMENT_BIT, "main", spirv); shader.valid())
-                _shaders.push_back(shader);
+    if (auto shader = readSpvFile(assimp_pbr, sizeof(assimp_pbr), VK_SHADER_STAGE_FRAGMENT_BIT); shader.valid())
+        _pbrShaders.push_back(shader);
 
-            file.close();
-        }
-    };
+    std::cout << __func__ << " " << _shaders.size() << " " << _pbrShaders.size() << std::endl;
 
-    auto readGlslFile = [this](const QString &filename, VkShaderStageFlagBits stage) {
-        if (QFile file(filename); file.open(QIODevice::ReadOnly))
-        {
-            const auto content = file.readAll();
-
-            if (auto shader = vsg::ShaderStage::create(stage, "main", content.toStdString()); shader.valid())
-                _shaders.push_back(shader);
-
-            file.close();
-        }
-    };
-
-    readGlslFile(":/shader.vert", VK_SHADER_STAGE_VERTEX_BIT);
-    readGlslFile(":/shader.frag", VK_SHADER_STAGE_FRAGMENT_BIT);
-//    readSpvFile(":/vertex.spv", VK_SHADER_STAGE_VERTEX_BIT);
-//    readSpvFile(":/fragment.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
-//    readSpvSingleFile(":/shader.spv");
-
-    qCDebug(lc) << __func__ << _shaders.size();
+    createGraphicsPipelines();
 }
 
-auto ReaderWriterAssimp::createGraphicsPipeline() const
+void ReaderWriterAssimp::createGraphicsPipelines()
 {
     // set up graphics pipeline
     vsg::DescriptorSetLayoutBindings descriptorBindings{
         {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}
     };
 
@@ -135,13 +127,17 @@ auto ReaderWriterAssimp::createGraphicsPipeline() const
     vsg::VertexInputState::Bindings vertexBindingsDescriptions{
         VkVertexInputBindingDescription{0, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX}, // vertex data
         VkVertexInputBindingDescription{1, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX}, // normal data
-        VkVertexInputBindingDescription{2, sizeof(vsg::vec2), VK_VERTEX_INPUT_RATE_VERTEX}  // texcoord data
+        VkVertexInputBindingDescription{2, sizeof(vsg::vec2), VK_VERTEX_INPUT_RATE_VERTEX}, // texcoord data
+        VkVertexInputBindingDescription{3, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX}, // tangents
+        VkVertexInputBindingDescription{4, sizeof(vsg::vec3), VK_VERTEX_INPUT_RATE_VERTEX}, // bitangets
     };
 
     vsg::VertexInputState::Attributes vertexAttributeDescriptions{
         VkVertexInputAttributeDescription{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, // vertex data
         VkVertexInputAttributeDescription{1, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}, // normal data
-        VkVertexInputAttributeDescription{2, 2, VK_FORMAT_R32G32_SFLOAT, 0}  // texcoord data
+        VkVertexInputAttributeDescription{2, 2, VK_FORMAT_R32G32_SFLOAT,    0}, // texcoord data
+        VkVertexInputAttributeDescription{3, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}, // tangents data
+        VkVertexInputAttributeDescription{4, 1, VK_FORMAT_R32G32B32_SFLOAT, 0}, // bitangents data
     };
 
     vsg::GraphicsPipelineStates pipelineStates{
@@ -155,33 +151,48 @@ auto ReaderWriterAssimp::createGraphicsPipeline() const
 
     auto pipelineLayout = vsg::PipelineLayout::create(vsg::DescriptorSetLayouts{descriptorSetLayout}, pushConstantRanges);
     auto pipeline = vsg::GraphicsPipeline::create(pipelineLayout, _shaders, pipelineStates);
-    auto bindGraphicsPipeline = vsg::BindGraphicsPipeline::create(pipeline);
+    _bindPhongPipeline = vsg::BindGraphicsPipeline::create(pipeline);
+    auto pipeline2 = vsg::GraphicsPipeline::create(pipelineLayout, _pbrShaders, pipelineStates);
+    _bindPbrPipeline = vsg::BindGraphicsPipeline::create(pipeline2);
 
     // create texture image and associated DescriptorSets and binding
     auto sampler = vsg::Sampler::create();
-    auto texture = vsg::DescriptorImage::create(sampler, kWhiteData, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    auto diffuseTexture = vsg::DescriptorImage::create(sampler, kWhiteData, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    auto mrTexture = vsg::DescriptorImage::create(sampler, kBlackData, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    auto normalTexture = vsg::DescriptorImage::create(sampler, kNormalData, 2, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    auto aoTexture = vsg::DescriptorImage::create(sampler, kWhiteData, 3, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     auto emissiveTexture = vsg::DescriptorImage::create(sampler, kWhiteData, 4, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     auto material = vsg::DescriptorBuffer::create(vsg::Value<Material>::create(Material()), 10);
 
-    auto descriptorSet = vsg::DescriptorSet::create(descriptorSetLayout, vsg::Descriptors{material, texture, emissiveTexture});
-    auto bindDescriptorSet = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, descriptorSet);
-
-    return std::pair{bindGraphicsPipeline, bindDescriptorSet};
+    auto descriptorSet = vsg::DescriptorSet::create(descriptorSetLayout, vsg::Descriptors{material, diffuseTexture, mrTexture, normalTexture, aoTexture, emissiveTexture});
+    _bindDefaultPhongDescriptorSet = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, descriptorSet);
 }
 
 vsg::ref_ptr<vsg::Object> ReaderWriterAssimp::processScene(const aiScene *scene, const vsg::Path &basePath) const
 {
+    int upAxis = 1, upAxisSign = 1;
+
+    if (scene->mMetaData)
+    {
+        if (!scene->mMetaData->Get("UpAxis", upAxis))
+            upAxis = 1;
+
+        if (!scene->mMetaData->Get("UpAxisSign", upAxisSign))
+            upAxisSign = 1;
+    }
+
     // Process materials
-
-    auto [bindGraphicsPipeline, bindDescriptorSet] = createGraphicsPipeline();
-
-    auto pipelineLayout = bindGraphicsPipeline->pipeline->layout;
-    //auto textures = processTextures(scene, basePath);
+    auto pipelineLayout = _bindPhongPipeline->pipeline->layout;
     auto bindDescriptorSets = processMaterials(scene, pipelineLayout.get(), basePath);
 
+    auto root = vsg::MatrixTransform::create();
+
+    if (upAxis == 1)
+        root->setMatrix(vsg::rotate(vsg::PIf * 0.5f, (float)upAxisSign, 0.0f, 0.0f));
+
     auto scenegraph = vsg::StateGroup::create();
-    scenegraph->add(bindGraphicsPipeline);
-    scenegraph->add(bindDescriptorSet);
+    scenegraph->add(_bindPhongPipeline);
+    scenegraph->add(_bindDefaultPhongDescriptorSet);
 
     std::stack<std::pair<aiNode*, vsg::ref_ptr<vsg::Group>>> nodes;
     nodes.push({scene->mRootNode, scenegraph});
@@ -203,6 +214,8 @@ vsg::ref_ptr<vsg::Object> ReaderWriterAssimp::processScene(const aiScene *scene,
             vsg::ref_ptr<vsg::vec3Array> vertices(new vsg::vec3Array(mesh->mNumVertices));
             vsg::ref_ptr<vsg::vec3Array> normals(new vsg::vec3Array(mesh->mNumVertices));
             vsg::ref_ptr<vsg::vec2Array> texcoords(new vsg::vec2Array(mesh->mNumVertices));
+            vsg::ref_ptr<vsg::vec3Array> tangents(new vsg::vec3Array(mesh->mNumVertices));
+            vsg::ref_ptr<vsg::vec3Array> bitangents(new vsg::vec3Array(mesh->mNumVertices));
             std::vector<unsigned int> indices;
 
             for (unsigned int j=0; j<mesh->mNumVertices; ++j)
@@ -225,6 +238,24 @@ vsg::ref_ptr<vsg::Object> ReaderWriterAssimp::processScene(const aiScene *scene,
                 else
                 {
                     texcoords->at(j) = vsg::vec2(0,0);
+                }
+
+                if (mesh->mBitangents)
+                {
+                    bitangents->at(j) = vsg::vec3(mesh->mBitangents[j].x, mesh->mBitangents[j].y, mesh->mBitangents[j].z);
+                }
+                else
+                {
+                    bitangents->at(j) = vsg::vec3(1,1,1);
+                }
+
+                if (mesh->mTangents)
+                {
+                    tangents->at(j) = vsg::vec3(mesh->mTangents[j].x, mesh->mTangents[j].y, mesh->mTangents[j].z);
+                }
+                else
+                {
+                    tangents->at(j) = vsg::vec3(1,1,1);
                 }
             }
 
@@ -254,14 +285,15 @@ vsg::ref_ptr<vsg::Object> ReaderWriterAssimp::processScene(const aiScene *scene,
             auto stategroup = vsg::StateGroup::create();
             xform->addChild(stategroup);
 
-            qCDebug(lc) << "Using material:" << scene->mMaterials[mesh->mMaterialIndex]->GetName().C_Str();
+            //qCDebug(lc) << "Using material:" << scene->mMaterials[mesh->mMaterialIndex]->GetName().C_Str();
             if (mesh->mMaterialIndex < bindDescriptorSets.size())
             {
                 auto bindDescriptorSet = bindDescriptorSets[mesh->mMaterialIndex];
-                stategroup->add(bindDescriptorSet);
+                stategroup->add(bindDescriptorSet.first);
+                stategroup->add(bindDescriptorSet.second);
             }
 
-            stategroup->addChild(vsg::BindVertexBuffers::create(0, vsg::DataList{vertices, normals, texcoords}));
+            stategroup->addChild(vsg::BindVertexBuffers::create(0, vsg::DataList{vertices, normals, texcoords, tangents, bitangents}));
             stategroup->addChild(vsg::BindIndexBuffer::create(vsg_indices));
             stategroup->addChild(vsg::DrawIndexed::create(indices.size(), 1, 0, 0, 0));
         }
@@ -271,18 +303,22 @@ vsg::ref_ptr<vsg::Object> ReaderWriterAssimp::processScene(const aiScene *scene,
             nodes.push({node->mChildren[i], xform});
     }
 
-    return scenegraph;
+    root->addChild(scenegraph);
+
+    return root;
 }
 
-ReaderWriterAssimp::BindDescriptorSets ReaderWriterAssimp::processMaterials(const aiScene *scene, vsg::PipelineLayout *layout, const vsg::Path &basePath) const
+ReaderWriterAssimp::BindState ReaderWriterAssimp::processMaterials(const aiScene *scene, vsg::PipelineLayout *layout, const vsg::Path &basePath) const
 {
-    BindDescriptorSets bindDescriptorSets;
+    BindState bindDescriptorSets;
     bindDescriptorSets.reserve(scene->mNumMaterials);
 
-    auto getTexture = [this, basePath](const aiScene &scene, const aiMaterial &material, aiTextureType type) -> vsg::SamplerImage {
-        vsg::SamplerImage sampler;
 
-        if (aiString texPath; material.GetTexture(type, 0, &texPath) == AI_SUCCESS)
+    auto getTexture = [this, basePath](const aiScene &scene, aiMaterial &material, aiTextureType type, vsg::ref_ptr<vsg::Data> defaultData = kWhiteData) -> vsg::SamplerImage {
+        vsg::SamplerImage sampler;
+        aiString texPath;
+
+        if (material.GetTexture(type, 0, &texPath) == AI_SUCCESS)
         {
             if (texPath.data[0] == '*')
             {
@@ -295,7 +331,10 @@ ReaderWriterAssimp::BindDescriptorSets ReaderWriterAssimp::processMaterials(cons
                 {
                     std::istrstream stream((const char*)texture->pcData, texture->mWidth);
 
-                    sampler.data = _options->readerWriter->read_cast<vsg::Data>(stream, _options);
+                    //sampler.data = _options->readerWriter->read_cast<vsg::Data>(stream, _options);
+                    auto options = vsg::Options::create(*_options);
+                    options->extensionHint = texture->achFormatHint;
+                    sampler.data = vsg::read_cast<vsg::Data>(stream, options);
                 }
             }
             else
@@ -303,24 +342,36 @@ ReaderWriterAssimp::BindDescriptorSets ReaderWriterAssimp::processMaterials(cons
                 const auto filepath = std::filesystem::absolute(vsg::concatPaths(basePath, vsg::Path{texPath.C_Str()}));
                 const auto filename = filepath.generic_string();
 
-                sampler.data = vsg::read_cast<vsg::Data>(filename, _options);
+                if (sampler.data = vsg::read_cast<vsg::Data>(filename, _options); !sampler.data.valid())
+                {
+                    std::cerr << "Failed to load texture: " << filename << std::endl;
+                }
+
             }
 
             sampler.sampler = vsg::Sampler::create();
         }
         else
         {
-            sampler.data = kWhiteData;
+            sampler.data = defaultData;
             sampler.sampler = vsg::Sampler::create();
         }
 
         if (!sampler.data.valid())
-            sampler.data = kWhiteData;
+            sampler.data = defaultData;
         else
         {
-            // Calculate maximum lod level
-            auto maxDim = std::max(sampler.data->width(), sampler.data->height());
-            sampler.sampler->maxLod = std::log2(maxDim);
+            sampler.sampler->maxLod = sampler.data->getLayout().maxNumMipmaps;
+
+            if (sampler.sampler->maxLod <= 1.0)
+            {
+//                if (texPath.length > 0)
+//                    std::cout << "Auto generating mipmaps for texture: " << scene.GetShortFilename(texPath.C_Str()) << std::endl;;
+
+                // Calculate maximum lod level
+                auto maxDim = std::max(sampler.data->width(), sampler.data->height());
+                sampler.sampler->maxLod = std::floor(std::log2(maxDim));
+            }
         }
 
         return sampler;
@@ -328,30 +379,69 @@ ReaderWriterAssimp::BindDescriptorSets ReaderWriterAssimp::processMaterials(cons
 
     for (unsigned int i=0; i<scene->mNumMaterials; ++i)
     {
-        const auto material = scene->mMaterials[i];        
+        const auto material = scene->mMaterials[i];
 
+//        qCDebug(lc) << "Material:" << material->GetName().C_Str();
 //        for (unsigned int j=0; j<material->mNumProperties; ++j)
 //        {
 //            const auto prop = material->mProperties[j];
-//            qCDebug(lc) << "Property" << j << prop->mKey.C_Str();
+
+//            aiString texpath;
+//            material->GetTexture((aiTextureType)prop->mSemantic, 0, &texpath);
+//            qCDebug(lc) << "Property" << j << prop->mKey.C_Str() << prop->mSemantic << texpath.C_Str();
+
 //        }
 
-//        if (PbrMaterial pbr; aiGetMaterialColor(material, AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_BASE_COLOR_FACTOR, (aiColor4D*)&pbr.base) == AI_SUCCESS)
-//        {
-//            unsigned int unit{10};
+        if (PbrMaterial pbr; aiGetMaterialColor(material, AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_BASE_COLOR_FACTOR, (aiColor4D*)&pbr.albedo) == AI_SUCCESS)
+        {
+            auto baseColorSampler = getTexture(*scene, *material, aiTextureType_DIFFUSE);
+            auto mrSampler = getTexture(*scene, *material, aiTextureType_UNKNOWN);
+            auto emissiveSampler = getTexture(*scene, *material, aiTextureType_EMISSIVE);
+            auto aoSampler = getTexture(*scene, *material, aiTextureType_LIGHTMAP);
+            auto normalSampler = getTexture(*scene, *material, aiTextureType_NORMALS, kNormalData);
 
-//            qCDebug(lc) << "PbrMaterial";
+            aiGetMaterialFloat(material, AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_METALLIC_FACTOR, &pbr.metallicRoughness.r);
+            aiGetMaterialFloat(material, AI_MATKEY_GLTF_PBRMETALLICROUGHNESS_ROUGHNESS_FACTOR, &pbr.metallicRoughness.g);
+            aiGetMaterialColor(material, AI_MATKEY_COLOR_EMISSIVE, (aiColor4D*)&pbr.emissive);
 
-//            for (const auto textureType : {aiTextureType_DIFFUSE, aiTextureType_UNKNOWN, aiTextureType_EMISSIVE, aiTextureType_LIGHTMAP, aiTextureType_NORMALS})
-//            {
-//                if (aiString path; material->GetTexture(textureType, 0, &path, nullptr, &unit) == AI_SUCCESS)
-//                {
-//                    qCDebug(lc).nospace() << "\t" << textureType << " texture: " << unit << " " << path.C_Str();
-//                }
-//            }
-//            //qCDebug(lc) << "Textures:" << material->GetTextureCount(aiTextureType_DIFFUSE) << material->GetTextureCount(aiTextureType_UNKNOWN) << material->GetTextureCount(aiTextureType_EMISSIVE) << material->GetTextureCount(aiTextureType_LIGHTMAP) << material->GetTextureCount(aiTextureType_NORMALS);
-//        }
-//        else
+            vsg::DescriptorSetLayoutBindings descriptorBindings{
+                {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}
+            };
+            vsg::Descriptors descList;
+
+            auto descriptorSetLayout = vsg::DescriptorSetLayout::create(descriptorBindings);
+            auto buffer = vsg::DescriptorBuffer::create(vsg::Value<PbrMaterial>::create(pbr), 10);
+            descList.push_back(buffer);
+
+            auto diffuseTexture = vsg::DescriptorImage::create(baseColorSampler, 0, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(diffuseTexture);
+
+            auto emissiveTexture = vsg::DescriptorImage::create(emissiveSampler, 4, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(emissiveTexture);
+
+            auto aoTexture = vsg::DescriptorImage::create(aoSampler, 3, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(aoTexture);
+
+            auto normalTexture = vsg::DescriptorImage::create(normalSampler, 2, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(normalTexture);
+
+            auto mrTexture = vsg::DescriptorImage::create(mrSampler, 1, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(mrTexture);
+
+            auto descriptorSet = vsg::DescriptorSet::create(descriptorSetLayout, descList);
+            auto bindDescriptorSet = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, descriptorSet);
+
+            bindDescriptorSets.push_back({_bindPbrPipeline, bindDescriptorSet});
+
+
+            //qCDebug(lc) << "PbrMaterial:" << pbr.albedo.r << pbr.albedo.g << pbr.albedo.b << pbr.base.a << pbr.emissive.r << pbr.emissive.g << pbr.emissive.b << pbr.emissive.a << pbr.metallicRoughness.r << pbr.metallicRoughness.g;
+        }
+        else
         {
             Material mat;
 
@@ -385,10 +475,16 @@ ReaderWriterAssimp::BindDescriptorSets ReaderWriterAssimp::processMaterials(cons
 
             auto diffuseSampler = getTexture(*scene, *material, aiTextureType_DIFFUSE);
             auto emissiveSampler = getTexture(*scene, *material, aiTextureType_EMISSIVE);
+            auto aoSampler = getTexture(*scene, *material, aiTextureType_LIGHTMAP);
+            auto normalSampler = getTexture(*scene, *material, aiTextureType_NORMALS, kNormalData);
+            auto mrSampler = getTexture(*scene, *material, aiTextureType_METALNESS);
 
             vsg::DescriptorSetLayoutBindings descriptorBindings{
                 {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
                 {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
                 {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}
             };
             vsg::Descriptors descList;
@@ -403,10 +499,19 @@ ReaderWriterAssimp::BindDescriptorSets ReaderWriterAssimp::processMaterials(cons
             auto emissiveTexture = vsg::DescriptorImage::create(emissiveSampler, 4, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
             descList.push_back(emissiveTexture);
 
+            auto aoTexture = vsg::DescriptorImage::create(aoSampler, 3, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(aoTexture);
+
+            auto normalTexture = vsg::DescriptorImage::create(normalSampler, 2, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(normalTexture);
+
+            auto mrTexture = vsg::DescriptorImage::create(mrSampler, 1, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+            descList.push_back(mrTexture);
+
             auto descriptorSet = vsg::DescriptorSet::create(descriptorSetLayout, descList);
             auto bindDescriptorSet = vsg::BindDescriptorSet::create(VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, descriptorSet);
 
-            bindDescriptorSets.push_back(bindDescriptorSet);
+            bindDescriptorSets.push_back({_bindPhongPipeline, bindDescriptorSet});
         }
     }
 
@@ -419,9 +524,9 @@ vsg::ref_ptr<vsg::Object> ReaderWriterAssimp::read(const vsg::Path &filename, vs
 
     if (const auto ext = vsg::fileExtension(filename); importer.IsExtensionSupported(ext))
     {
-        if (auto scene = importer.ReadFile(filename, aiProcess_Triangulate); scene)
+        if (auto scene = importer.ReadFile(filename, aiProcess_Triangulate | aiProcess_CalcTangentSpace | aiProcess_FlipUVs | aiProcess_OptimizeMeshes | aiProcess_SortByPType | aiProcess_ImproveCacheLocality | aiProcess_GenUVCoords); scene)
         {
-            qCDebug(lc) << "File" << filename.c_str() << "loaded successfully. Num meshes" << scene->mNumMeshes << scene->mNumMaterials << scene->mNumTextures;
+            //qCDebug(lc) << "File" << filename.c_str() << "loaded successfully. Num meshes" << scene->mNumMeshes << scene->mNumMaterials << scene->mNumTextures;
 
             return processScene(scene, vsg::filePath(filename));
         }

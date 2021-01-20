@@ -36,26 +36,19 @@ vsg {
     }
 }
 
-pvrtextool {
-    win32 {
-        PVR_DIR = $$quote(C:/Imagination Technologies/PowerVR_Graphics/PowerVR_Tools/PVRTexTool/Library)
-        INCLUDEPATH *= $${PVR_DIR}/include
-        #DEFINES *= PVR_DLL=__declspec(dllimport)
-        LIBS *= -L$${PVR_DIR}/Windows_x86_64 -lPVRTexLib
-    }
-}
-
 assimp {
     win32 {
         INCLUDEPATH *= $$ASSIMP_INCLUDE
 
         CONFIG(debug, debug|release) {
-            LIBS *= -L$$ASSIMP_LIBRARY_DBG -L$$ASSIMP_BINARY_DBG
-            LIBS *= -lassimp-vc142-mtd -lzlibstaticd -lIrrXMLd
+            LIBS *= -L$$ASSIMP_LIBRARY_DBG
+            LIBS *= -lassimpd -lzlibstaticd
         } else {
-            LIBS *= -L$$ASSIMP_LIBRARY_REL -L$$ASSIMP_BINARY_REL
-            LIBS *= -lassimp-vc142-mt -lzlibstatic -lIrrXML
+            LIBS *= -L$$ASSIMP_LIBRARY_REL
+            LIBS *= -lassimp -lzlibstatic
         }
+
+        LIBS *= -lAdvapi32
     }
 }
 

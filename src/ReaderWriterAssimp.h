@@ -7,6 +7,7 @@ struct aiScene;
 namespace vsg {
 class PipelineLayout;
 class ShaderStage;
+class BindGraphicsPipeline;
 }
 
 class ReaderWriterAssimp : public vsg::Inherit<vsg::ReaderWriter, ReaderWriterAssimp>
@@ -19,13 +20,17 @@ public:
 
 private:
 
-    using BindDescriptorSets = std::vector<vsg::ref_ptr<vsg::StateCommand>>;
+    using StateCommandPtr = vsg::ref_ptr<vsg::StateCommand>;
+    using State = std::pair<StateCommandPtr, StateCommandPtr>;
+    using BindState = std::vector<State>;
 
-    auto createGraphicsPipeline() const;
+    void createGraphicsPipelines();
     vsg::ref_ptr<vsg::Object> processScene(const aiScene *scene, const vsg::Path &basePath) const;
-    BindDescriptorSets processMaterials(const aiScene *scene, vsg::PipelineLayout *layout, const vsg::Path &basePath) const;
+    BindState processMaterials(const aiScene *scene, vsg::PipelineLayout *layout, const vsg::Path &basePath) const;
 
-    std::vector<vsg::ref_ptr<vsg::ShaderStage>> _shaders;
+    std::vector<vsg::ref_ptr<vsg::ShaderStage>> _shaders, _pbrShaders;
     vsg::ref_ptr<vsg::Options> _options;
+    vsg::ref_ptr<vsg::BindGraphicsPipeline> _bindPhongPipeline, _bindPbrPipeline;
+    vsg::ref_ptr<vsg::BindDescriptorSet> _bindDefaultPhongDescriptorSet;
 };
 

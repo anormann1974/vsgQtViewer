@@ -1,4 +1,13 @@
 win32 {
-    OSG_ROOT = <Path>
-    OSGQT_ROOT = <Path>
+    VULKAN_INCLUDE = $$(VULKAN_SDK)/Include
+    VULKAN_LIBRARY_DBG = $$(VULKAN_SDK)/Lib
+    VULKAN_LIBRARY_REL = $$(VULKAN_SDK)/Lib
+
+    VSG_INCLUDE = <vsg install dir>/include
+    VSG_LIBRARY_DBG = <vsg install dir>/lib
+    VSG_LIBRARY_REL = <vsg install dir>/lib
+
+    ASSIMP_INCLUDE = <assimp install dir>/include
+    ASSIMP_LIBRARY_DBG = <assimp install dir>/lib
+    ASSIMP_LIBRARY_REL = <assimp install dir>/lib
 }
