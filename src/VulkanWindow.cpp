@@ -40,8 +40,8 @@ class Surface : public vsg::Inherit<vsg::Surface, Surface>
 {
 public:
 
-    Surface(QWindow *window, vsg::Instance *instance)
-        : Inherit(QVulkanInstance::surfaceForWindow(window), instance)
+    Surface(VkSurfaceKHR surface, vsg::Instance *instance)
+        : Inherit(surface, instance)
     {
     }
 
@@ -60,7 +60,7 @@ public:
         : Inherit(traits)
         , _window(win)
     {
-        _instance = win->instance();
+//        _instance = win->instance();
 
         if (traits->shareWindow)
         {
@@ -121,6 +121,10 @@ public:
 #endif
     }
 
+    void update_instance()
+    {
+        _instance = _window->instance();
+    }
 
     vsg::UIEvents bufferedEvents;
 
@@ -133,7 +137,8 @@ protected:
         if (!_instance)
             _initInstance();
 
-        _surface = new Surface(_window, _instance);
+        auto surface_vk = QVulkanInstance::surfaceForWindow(_window);
+        _surface = new Surface(surface_vk, _instance);
     }
 
     virtual ~Window() override
@@ -239,6 +244,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
                 qCDebug(lc) << __func__<< "success.";
                 setVulkanInstance(p->instance);
 
+                p->window->update_instance();
                 p->viewer->addWindow(p->window);
 
 #if 1
