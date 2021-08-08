@@ -35,8 +35,15 @@ win32 {
     #QMAKE_POST_LINK += $$QT_BIN_DIR\\windeployqt --no-compiler-runtime --dir $${DESTDIR} --plugindir $${DESTDIR}/plugins $${DEPLOY_ARGS} $${DEPLOY_TARGET} $$escape_expand(\\n\\t)
 }
 
-unix {
+unix:!macx {
     DEFINES *= VK_USE_PLATFORM_XCB_KHR
     INCLUDEPATH *= $$(VSG_ROOT)/include $$(VULKAN_SDK)/include
     LIBS *= -L$$(VSG_ROOT)/lib -L$$(VULKAN_SDK)/lib -lvsg -lvulkan -lglslang -lOGLCompiler -lOSDependent -lHLSL -lSPIRV -lSPIRV-Tools-opt -lSPIRV-Tools
+}
+
+macx {
+    DEFINES *= VK_USE_PLATFORM_MACOS_MVK
+    #DEFINES *= VK_USE_PLATFORM_METAL_EXT
+    INCLUDEPATH *= $$(VSG_ROOT)/include $$(VULKAN_SDK)/include
+    LIBS *= -L$$(VSG_ROOT)/lib -L$$(VULKAN_SDK)/lib -lvsgd -lvulkan -lglslang -lGenericCodeGen -lHLSL -lMachineIndependent -lOGLCompiler -lOSDependent -lSPIRV -lSPIRV-Tools -lSPIRV-Tools-opt
 }

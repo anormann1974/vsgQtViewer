@@ -39,10 +39,15 @@ static vsg::ref_ptr<vsg::Data> createWhiteTexture()
 class Surface : public vsg::Inherit<vsg::Surface, Surface>
 {
 public:
-
     Surface(QWindow *window, vsg::Instance *instance)
         : Inherit(QVulkanInstance::surfaceForWindow(window), instance)
     {
+        auto vkSurface = QVulkanInstance::surfaceForWindow(window);
+        qCDebug(lc) << __func__ << vkSurface;
+
+        if (!vkSurface) {
+            throw vsg::Exception{"Error: Failed to create vsg::Surface for Qt window"};
+        }
     }
 
     virtual ~Surface()
@@ -60,7 +65,9 @@ public:
         : Inherit(traits)
         , _window(win)
     {
-        _instance = win->instance();
+        if (win->instance()) {
+            _instance = win->instance();
+        }
 
         if (traits->shareWindow)
         {
@@ -118,21 +125,18 @@ public:
         return VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
 #elif defined(VK_USE_PLATFORM_XCB_KHR)
         return VK_KHR_XCB_SURFACE_EXTENSION_NAME;
+#elif defined(VK_USE_PLATFORM_MACOS_MVK)
+        return VK_MVK_MACOS_SURFACE_EXTENSION_NAME;
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
+        return VK_EXT_METAL_SURFACE_EXTENSION_NAME;
 #endif
     }
-
 
     vsg::UIEvents bufferedEvents;
 
 protected:
-
     virtual void _initSurface() override
     {
-        //qCDebug(lc) << __func__ << _instance;
-
-        if (!_instance)
-            _initInstance();
-
         _surface = new Surface(_window, _instance);
     }
 
@@ -205,6 +209,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
         {
             p->initialized = true;
 
+            // create window
             const auto rect = e->region().boundingRect();
             const uint32_t width = static_cast<uint32_t>(rect.width());
             const uint32_t height = static_cast<uint32_t>(rect.height());
@@ -220,6 +225,7 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
 
             p->window = new vsgQt::Window(this, windowTraits);
 
+            // create instance
             vsg::Names instanceExtensions;
             instanceExtensions.push_back("VK_KHR_surface");
             instanceExtensions.push_back(p->window->instanceExtensionSurfaceName());
@@ -233,10 +239,19 @@ void VulkanWindow::exposeEvent(QExposeEvent *e)
 
             p->vsgInstance = vsg::Instance::create(instanceExtensions, validatedNames);
 
+            // 1. We create first new vsgQt::Window
+            // 2. After that we create new vsg::Instance
+            // Therefore, "p->window" instance doesn't have a valid instance yet and will create new one via vsg::Window::_initInstance()
+            // However, "p->vsgInstance" isntance is used to initialize the QVulkanInstance instance. Later re-creation of the isntance
+            // will cause a failed call to create Qt surface
+            p->window->setInstance(p->vsgInstance);
+
             p->instance->setVkInstance(p->vsgInstance->getInstance());
+
             if (p->instance->create())
             {
-                qCDebug(lc) << __func__<< "success.";
+                qCDebug(lc) << __func__ << "p->instance->create() succeeded";
+
                 setVulkanInstance(p->instance);
 
                 p->viewer->addWindow(p->window);
@@ -430,7 +445,7 @@ void VulkanWindow::setClearColor(const QColor &color)
     {
         p->window->clearColor() = clearColor;
 
-        p->commandGraph->getChildren().clear();
+        p->commandGraph->children.clear();
         p->commandGraph->addChild(vsg::createRenderGraphForView(p->window, p->camera, p->scenegraph));
     }
 }
