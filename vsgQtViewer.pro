@@ -43,7 +43,6 @@ unix:!macx {
 
 macx {
     DEFINES *= VK_USE_PLATFORM_MACOS_MVK
-    #DEFINES *= VK_USE_PLATFORM_METAL_EXT
     INCLUDEPATH *= $$(VSG_ROOT)/include $$(VULKAN_SDK)/include
     LIBS *= -L$$(VSG_ROOT)/lib -L$$(VULKAN_SDK)/lib -lvsgd -lvulkan -lglslang -lGenericCodeGen -lHLSL -lMachineIndependent -lOGLCompiler -lOSDependent -lSPIRV -lSPIRV-Tools -lSPIRV-Tools-opt
 }

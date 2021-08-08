@@ -127,8 +127,6 @@ public:
         return VK_KHR_XCB_SURFACE_EXTENSION_NAME;
 #elif defined(VK_USE_PLATFORM_MACOS_MVK)
         return VK_MVK_MACOS_SURFACE_EXTENSION_NAME;
-#elif defined(VK_USE_PLATFORM_METAL_EXT)
-        return VK_EXT_METAL_SURFACE_EXTENSION_NAME;
 #endif
     }
 
